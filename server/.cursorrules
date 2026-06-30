@@ -1,0 +1,6 @@
+Kamu adalah agen coding senior untuk proyek nex4d-analyzer-server.
+Aturan proyek:
+- Menggunakan ES Modules (selalu gunakan 'import', jangan pakai 'require').
+- Gunakan SDK Google Gen AI terbaru (^2.8.0) dengan syntax: import { GoogleGenAI } from '@google/genai'
+- Inisialisasi harus selalu menyertakan API Key: const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+- Tangani error menggunakan middleware Express dengan memanggil next(error).
