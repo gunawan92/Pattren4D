@@ -13,8 +13,21 @@ const loading = ref(false)
 const error = ref('')
 const aiResult = ref(null)
 
+const analysisForAi = computed(() => {
+  if (!props.analysis?.topCandidates) {
+    return props.analysis
+  }
+
+  return {
+    ...(props.analysis.analysis || {}),
+    candidates4d: props.analysis.topCandidates.map((candidate) => candidate.candidate),
+    topCandidates: props.analysis.topCandidates,
+    generated: props.analysis.generated,
+  }
+})
+
 const canAnalyze = computed(() => {
-  return Boolean(props.analysis?.candidates4d?.length)
+  return Boolean(analysisForAi.value?.candidates4d?.length)
 })
 
 function displayList(value) {
@@ -34,7 +47,7 @@ async function runAiAnalysis() {
   error.value = ''
 
   try {
-    const response = await analyzeCandidatesWithAi(props.analysis)
+    const response = await analyzeCandidatesWithAi(analysisForAi.value)
     aiResult.value = response.data || null
   } catch (_err) {
     error.value = 'AI analysis failed. Please run generate again or check Gemini API key.'

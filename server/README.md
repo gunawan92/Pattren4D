@@ -69,6 +69,8 @@ curl -X POST http://localhost:4105/api/analysis \
   -d '{"session":"night","targetDate":"2026-06-30","targetDay":"Selasa","historyDepth":5}'
 ```
 
+Tabel DSV1 dibuat otomatis oleh engine dan ditampilkan read-only di hasil analisa.
+
 Endpoint v2:
 
 - `POST /api/analysis` menjalankan full pipeline dan menyimpan hasil.

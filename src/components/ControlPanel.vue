@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, watch } from 'vue'
+import { reactive, watch } from 'vue'
 import { todayInputValue } from '../utils/format'
 
 defineProps({
@@ -12,27 +12,48 @@ defineProps({
 const emit = defineEmits(['generate', 'refresh-results', 'session-change', 'sync-results'])
 
 const days = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu']
+const dateFormatter = new Intl.DateTimeFormat('id-ID', { weekday: 'long' })
+
+function dayNameFromInput(value) {
+  const date = new Date(`${value}T00:00:00`)
+
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+
+  const day = dateFormatter.format(date)
+  return day.charAt(0).toUpperCase() + day.slice(1)
+}
+
 const form = reactive({
   session: 'day',
   targetDate: todayInputValue(),
-  targetDay: 'Kamis',
-  algorithmVersion: 'day_v1',
-})
-
-const algorithmOptions = computed(() => {
-  return form.session === 'day' ? ['day_v1', 'day_v2'] : ['night_v1', 'night_v2']
+  targetDay: dayNameFromInput(todayInputValue()),
+  historyDepth: 5,
 })
 
 watch(
   () => form.session,
   (session) => {
-    form.algorithmVersion = session === 'day' ? 'day_v1' : 'night_v1'
     emit('session-change', session)
   },
 )
 
+watch(
+  () => form.targetDate,
+  (targetDate) => {
+    const nextDay = dayNameFromInput(targetDate)
+    if (nextDay) {
+      form.targetDay = nextDay
+    }
+  },
+)
+
 function submit() {
-  emit('generate', { ...form })
+  emit('generate', {
+    ...form,
+    historyDepth: Number(form.historyDepth) || 5,
+  })
 }
 </script>
 
@@ -66,16 +87,19 @@ function submit() {
         </div>
 
         <div class="col-md-6 col-lg-12">
-          <label class="form-label fw-semibold" for="algorithm">Versi Algoritma</label>
-          <select id="algorithm" v-model="form.algorithmVersion" class="form-select">
-            <option v-for="version in algorithmOptions" :key="version" :value="version">
-              {{ version }}
-            </option>
-          </select>
+          <label class="form-label fw-semibold" for="history-depth">Depth History Mingguan</label>
+          <input
+            id="history-depth"
+            v-model.number="form.historyDepth"
+            class="form-control"
+            type="number"
+            min="1"
+            max="52"
+          />
         </div>
 
         <div class="col-12 d-grid gap-2">
-          <button class="btn btn-primary" type="submit">Generate Analisa</button>
+          <button class="btn btn-primary" type="submit">Run Pattern Lab v2</button>
           <button class="btn btn-outline-secondary" type="button" @click="emit('refresh-results')">
             Refresh Hasil Terbaru
           </button>

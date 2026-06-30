@@ -180,6 +180,14 @@ body {
   background: #fff;
 }
 
+.candidate-meta {
+  color: var(--text-soft);
+  font-size: 0.75rem;
+  font-weight: 800;
+  margin-bottom: 0.35rem;
+  text-transform: uppercase;
+}
+
 .ai-analyst-card .btn {
   min-height: 42px;
   white-space: nowrap;

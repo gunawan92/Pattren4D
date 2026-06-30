@@ -1,10 +1,13 @@
 import { generateCandidatePool } from './candidate-generator.js'
 import { rankCandidates } from './ranking.js'
+import { generateAnalysis as generateEngineAnalysis } from '../analyzer/analyzer.service.js'
 import {
   loadHistoricalDraws,
-  resolveDsv1Profile,
-  resolveHistoricalDsv1Profiles,
+  normalizeDrawDateText,
 } from './repositories/draw.repository.js'
+import {
+  buildHistoricalPatternAnalysis,
+} from './historical-pattern-analyzer.js'
 import {
   getCandidatePool,
   getCandidateRanking,
@@ -17,9 +20,10 @@ import {
   calculateScoreStatistics,
   dayNameFromDate,
   digitFrequency,
+  DIGITS,
   normalizeDayName,
+  normalizeWeightProfile,
   parseTargetDate,
-  scoreNumber,
   toDateText,
 } from './statistics.js'
 import { validateCandidate } from './validators/index.js'
@@ -27,6 +31,12 @@ import { validateCandidate } from './validators/index.js'
 const DEFAULT_HISTORY_DEPTH = 5
 const MAX_HISTORY_DEPTH = 52
 const DEFAULT_LIMIT = 100
+const PERSISTED_ACCEPTED_LIMIT = 100
+const CLUSTER_PERSIST_LIMIT = Math.floor(PERSISTED_ACCEPTED_LIMIT / 3)
+
+function defaultAlgorithmVersion(session) {
+  return session === 'day' ? 'day_v1' : 'night_v1'
+}
 
 function parseLimit(value, fallback = DEFAULT_LIMIT) {
   const limit = Number(value || fallback)
@@ -60,11 +70,106 @@ function drawEvidence(draw) {
   }
 }
 
+function validateDsv1Table(profile) {
+  const normalized = normalizeWeightProfile(profile || {})
+  const hasAnyValue = DIGITS.some((digit) => Number(normalized[digit]) > 0)
+
+  if (!profile || !Object.keys(profile).length || !hasAnyValue) {
+    const error = new Error('Current DSV1 table is required')
+    error.statusCode = 400
+    error.payload = {
+      ok: false,
+      message: 'Current DSV1 table is required',
+      required: DIGITS,
+    }
+    throw error
+  }
+
+  return normalized
+}
+
+async function generateCurrentDsv1Table({
+  session,
+  targetDate,
+  targetDay,
+  algorithmVersion,
+}) {
+  const generated = await generateEngineAnalysis({
+    session,
+    targetDate,
+    targetDay,
+    algorithmVersion: algorithmVersion || defaultAlgorithmVersion(session),
+  })
+  const row = generated.data
+  const profile = validateDsv1Table(row?.digitPool?.weighted)
+
+  return {
+    profile,
+    source: {
+      type: 'pattern_lab_engine_generated',
+      analysisCandidateId: row?._id,
+      algorithmVersion: row?.algorithmVersion,
+    },
+    engineResult: row,
+  }
+}
+
+async function generateHistoricalDsv1Snapshots({
+  session,
+  historicalDraws,
+  algorithmVersion,
+}) {
+  const snapshots = []
+
+  for (const draw of historicalDraws) {
+    const drawDateText = normalizeDrawDateText(draw.drawDateText)
+      || (draw.drawDate ? toDateText(new Date(draw.drawDate)) : '')
+    const generated = await generateEngineAnalysis({
+      session,
+      targetDate: drawDateText,
+      targetDay: normalizeDayName(draw.dayName),
+      algorithmVersion: algorithmVersion || defaultAlgorithmVersion(session),
+    })
+    const row = generated.data
+    const profile = validateDsv1Table(row?.digitPool?.weighted)
+
+    snapshots.push({
+      drawId: draw._id,
+      weekOffset: draw.weekOffset,
+      drawDateText,
+      result4d: draw.normalizedResult || draw.result4d || draw.drawNumber,
+      profile,
+      source: {
+        type: 'pattern_lab_engine_generated',
+        analysisCandidateId: row?._id,
+        algorithmVersion: row?.algorithmVersion,
+      },
+    })
+  }
+
+  return snapshots
+}
+
+function dsv1Breakdown(number, profile) {
+  const digits = String(number || '').replace(/\D/g, '').slice(0, 4).split('')
+  const breakdown = digits.map((digit, index) => ({
+    position: index + 1,
+    digit,
+    score: Number(profile[digit] || 0),
+  }))
+
+  return {
+    breakdown,
+    totalScore: breakdown.reduce((total, item) => total + item.score, 0),
+  }
+}
+
 function buildCandidateRows({
   pool,
   basePayload,
   statistics,
   context,
+  patternAnalysis,
 }) {
   const historicalFrequency = digitFrequency(context.historicalDraws)
 
@@ -81,8 +186,11 @@ function buildCandidateRows({
         supportScore: 0,
         historicalWeight: 0,
         frequencyWeight: 0,
+        patternBand: item.patternBand,
+        patternConsistency: 0,
         evidence: {
           scoreRange: statistics.suggestedScoreRange,
+          patternEvidence: item.patternEvidence,
         },
       }
     }
@@ -95,6 +203,8 @@ function buildCandidateRows({
     const frequencyWeight = candidateDigits.reduce((total, digit) => {
       return total + (historicalFrequency[digit] || 0)
     }, 0)
+    const cluster = patternAnalysis.scoreClusters.find((row) => row.band === item.patternBand)
+    const patternConsistency = Math.round((cluster?.frequency || 0) * 100)
 
     return {
       ...basePayload,
@@ -107,12 +217,48 @@ function buildCandidateRows({
       supportScore: validation.supportScore,
       historicalWeight,
       frequencyWeight,
+      patternBand: item.patternBand,
+      patternConsistency,
       evidence: {
         scoreRange: statistics.suggestedScoreRange,
         historicalFrequency,
+        patternEvidence: item.patternEvidence,
       },
     }
   })
+}
+
+function selectBalancedCandidateRows(rows, limit = PERSISTED_ACCEPTED_LIMIT) {
+  const byBand = ['low', 'medium', 'high'].flatMap((band) => {
+    return rows
+      .filter((row) => row.patternBand === band)
+      .sort((a, b) => {
+        const consistencyDiff = b.patternConsistency - a.patternConsistency
+        if (consistencyDiff !== 0) {
+          return consistencyDiff
+        }
+
+        const supportDiff = b.supportScore - a.supportScore
+        if (supportDiff !== 0) {
+          return supportDiff
+        }
+
+        return a.candidate.localeCompare(b.candidate)
+      })
+      .slice(0, CLUSTER_PERSIST_LIMIT)
+  })
+  const remainder = rows
+    .filter((row) => !byBand.some((selected) => selected.candidate === row.candidate))
+    .sort((a, b) => {
+      const consistencyDiff = b.patternConsistency - a.patternConsistency
+      if (consistencyDiff !== 0) {
+        return consistencyDiff
+      }
+
+      return b.supportScore - a.supportScore || a.candidate.localeCompare(b.candidate)
+    })
+
+  return [...byBand, ...remainder].slice(0, limit)
 }
 
 export async function runPatternLabAnalysis({
@@ -121,7 +267,7 @@ export async function runPatternLabAnalysis({
   targetDate,
   targetDay,
   historyDepth,
-  currentWeightProfile,
+  algorithmVersion,
 } = {}) {
   validateSession(session)
 
@@ -129,6 +275,13 @@ export async function runPatternLabAnalysis({
   const targetDateText = toDateText(targetDateObject)
   const normalizedTargetDay = normalizeDayName(targetDay) || dayNameFromDate(targetDateObject)
   const depth = parseHistoryDepth(historyDepth)
+  const currentDsv1 = await generateCurrentDsv1Table({
+    session,
+    targetDate: targetDateText,
+    targetDay: normalizedTargetDay,
+    algorithmVersion,
+  })
+  const currentProfile = currentDsv1.profile
   const historicalDraws = await loadHistoricalDraws({
     market,
     session,
@@ -147,22 +300,29 @@ export async function runPatternLabAnalysis({
     throw error
   }
 
-  const historicalProfiles = await resolveHistoricalDsv1Profiles({
-    market,
+  const historicalSnapshots = await generateHistoricalDsv1Snapshots({
     session,
     historicalDraws,
+    algorithmVersion,
   })
-  const historicalScores = historicalDraws.map((draw) => {
-    const profile = historicalProfiles.find((item) => String(item.drawId) === String(draw._id))
-    return scoreNumber(draw.normalizedResult || draw.result4d || draw.drawNumber, profile?.profile || {})
+  const historyWithDsv1 = historicalDraws.map((draw) => {
+    const result4d = draw.normalizedResult || draw.result4d || draw.drawNumber
+    const snapshot = historicalSnapshots.find((item) => String(item.drawId) === String(draw._id))
+    const calculation = dsv1Breakdown(result4d, snapshot?.profile || currentProfile)
+
+    return {
+      ...drawEvidence(draw),
+      dsv1Snapshot: snapshot?.profile || {},
+      dsv1Source: snapshot?.source || {},
+      dsv1Breakdown: calculation.breakdown,
+      totalScore: calculation.totalScore,
+    }
   })
+  const historicalScores = historyWithDsv1.map((draw) => draw.totalScore)
   const statistics = calculateScoreStatistics(historicalScores)
-  const currentProfile = await resolveDsv1Profile({
-    market,
-    session,
-    targetDate: targetDateObject,
-    explicitProfile: currentWeightProfile,
-    fallbackDraws: historicalDraws,
+  const patternAnalysis = buildHistoricalPatternAnalysis({
+    snapshots: historicalSnapshots,
+    scores: historicalScores,
   })
 
   const weeklyStatistic = await upsertWeeklyStatistic({
@@ -172,21 +332,23 @@ export async function runPatternLabAnalysis({
     targetDateText,
     targetDay: normalizedTargetDay,
     historyDepth: depth,
-    history: historicalDraws.map(drawEvidence),
-    dsv1Profiles: historicalProfiles.map((item) => ({
-      drawId: item.drawId,
-      drawDateText: item.drawDateText,
-      weekOffset: item.weekOffset,
-      profile: item.profile,
-      source: item.source,
+    history: historyWithDsv1,
+    dsv1Profiles: historicalSnapshots.map((snapshot) => ({
+      drawId: snapshot.drawId,
+      drawDateText: snapshot.drawDateText,
+      weekOffset: snapshot.weekOffset,
+      profile: snapshot.profile,
+      source: snapshot.source,
     })),
     scores: historicalScores,
     statistics,
     suggestedScoreRange: statistics.suggestedScoreRange,
-    currentWeightProfile: currentProfile.profile,
+    currentWeightProfile: currentProfile,
     source: {
-      currentWeightProfile: currentProfile.source,
+      currentWeightProfile: currentDsv1.source,
     },
+    engineAnalysis: currentDsv1.engineResult,
+    patternAnalysis,
   })
 
   const basePayload = {
@@ -197,21 +359,26 @@ export async function runPatternLabAnalysis({
     statisticsId: weeklyStatistic._id,
   }
   const rawPool = generateCandidatePool({
-    currentWeightProfile: currentProfile.profile,
+    currentWeightProfile: currentProfile,
     suggestedScoreRange: statistics.suggestedScoreRange,
+    patternAnalysis,
   })
   const candidateRows = buildCandidateRows({
     pool: rawPool,
     basePayload,
     statistics,
+    patternAnalysis,
     context: {
       historicalDraws,
-      currentWeightProfile: currentProfile.profile,
+      currentWeightProfile: currentProfile,
+      patternAnalysis,
     },
   })
-  const savedPool = await upsertCandidatePoolRows(candidateRows)
+  const acceptedCandidateRows = candidateRows.filter((row) => row.status === 'accepted')
+  const persistedCandidateRows = selectBalancedCandidateRows(acceptedCandidateRows)
+  const savedPool = await upsertCandidatePoolRows(persistedCandidateRows, basePayload)
   const savedPoolRows = savedPool.map((row) => (typeof row.toObject === 'function' ? row.toObject() : row))
-  const rankedRows = rankCandidates(savedPoolRows).map((row) => ({
+  const rankedRows = rankCandidates(savedPoolRows, patternAnalysis).map((row) => ({
     market: row.market,
     session: row.session,
     targetDateText: row.targetDateText,
@@ -225,12 +392,14 @@ export async function runPatternLabAnalysis({
     supportScore: row.supportScore,
     historicalWeight: row.historicalWeight,
     frequencyWeight: row.frequencyWeight,
+    patternBand: row.patternBand,
+    patternConsistency: row.patternConsistency,
     finalScore: row.finalScore,
     validationResults: row.validationResults,
     reason: row.reason,
     evidence: row.evidence,
   }))
-  const savedRanking = await upsertRankingRows(rankedRows)
+  const savedRanking = await upsertRankingRows(rankedRows, basePayload)
 
   return {
     ok: true,

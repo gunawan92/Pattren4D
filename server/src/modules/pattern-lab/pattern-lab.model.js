@@ -29,6 +29,8 @@ const weeklyStatisticSchema = new mongoose.Schema(
     },
     currentWeightProfile: { type: mongoose.Schema.Types.Mixed, default: {} },
     source: { type: mongoose.Schema.Types.Mixed, default: {} },
+    engineAnalysis: { type: mongoose.Schema.Types.Mixed, default: {} },
+    patternAnalysis: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   {
     collection: 'weekly_statistics',
@@ -70,6 +72,8 @@ const candidatePoolSchema = new mongoose.Schema(
     supportScore: { type: Number, default: 0 },
     historicalWeight: { type: Number, default: 0 },
     frequencyWeight: { type: Number, default: 0 },
+    patternBand: { type: String, enum: ['low', 'medium', 'high'], index: true },
+    patternConsistency: { type: Number, default: 0 },
     evidence: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   {
@@ -109,6 +113,8 @@ const candidateRankingSchema = new mongoose.Schema(
     supportScore: { type: Number, default: 0 },
     historicalWeight: { type: Number, default: 0 },
     frequencyWeight: { type: Number, default: 0 },
+    patternBand: { type: String, enum: ['low', 'medium', 'high'], index: true },
+    patternConsistency: { type: Number, default: 0 },
     finalScore: { type: Number, required: true, index: true },
     validationResults: { type: [validationResultSchema], default: [] },
     reason: { type: String, trim: true },

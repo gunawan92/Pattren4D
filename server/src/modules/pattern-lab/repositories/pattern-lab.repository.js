@@ -23,54 +23,74 @@ export async function upsertWeeklyStatistic(payload) {
   return result.value || result
 }
 
-export async function upsertCandidatePoolRows(rows) {
-  const saved = []
+export async function upsertCandidatePoolRows(rows, scope = rows[0]) {
+  await CandidatePool.deleteMany({
+    market: scope.market,
+    session: scope.session,
+    targetDateText: scope.targetDateText,
+  })
 
-  for (const row of rows) {
-    const result = await CandidatePool.findOneAndUpdate(
-      {
-        market: row.market,
-        session: row.session,
-        targetDateText: row.targetDateText,
-        candidate: row.candidate,
-      },
-      { $set: row },
-      {
-        includeResultMetadata: true,
-        new: true,
-        upsert: true,
-      },
-    )
-
-    saved.push(result.value || result)
+  if (!rows.length) {
+    return []
   }
 
-  return saved
+  await CandidatePool.bulkWrite(
+    rows.map((row) => ({
+      updateOne: {
+        filter: {
+          market: row.market,
+          session: row.session,
+          targetDateText: row.targetDateText,
+          candidate: row.candidate,
+        },
+        update: { $set: row },
+        upsert: true,
+      },
+    })),
+    { ordered: false },
+  )
+
+  return CandidatePool.find({
+    market: scope.market,
+    session: scope.session,
+    targetDateText: scope.targetDateText,
+    candidate: { $in: rows.map((row) => row.candidate) },
+  })
 }
 
-export async function upsertRankingRows(rows) {
-  const saved = []
+export async function upsertRankingRows(rows, scope = rows[0]) {
+  await CandidateRanking.deleteMany({
+    market: scope.market,
+    session: scope.session,
+    targetDateText: scope.targetDateText,
+  })
 
-  for (const row of rows) {
-    const result = await CandidateRanking.findOneAndUpdate(
-      {
-        market: row.market,
-        session: row.session,
-        targetDateText: row.targetDateText,
-        candidate: row.candidate,
-      },
-      { $set: row },
-      {
-        includeResultMetadata: true,
-        new: true,
-        upsert: true,
-      },
-    )
-
-    saved.push(result.value || result)
+  if (!rows.length) {
+    return []
   }
 
-  return saved
+  await CandidateRanking.bulkWrite(
+    rows.map((row) => ({
+      updateOne: {
+        filter: {
+          market: row.market,
+          session: row.session,
+          targetDateText: row.targetDateText,
+          candidate: row.candidate,
+        },
+        update: { $set: row },
+        upsert: true,
+      },
+    })),
+    { ordered: false },
+  )
+
+  return CandidateRanking.find({
+    market: scope.market,
+    session: scope.session,
+    targetDateText: scope.targetDateText,
+    candidate: { $in: rows.map((row) => row.candidate) },
+  })
 }
 
 export function getLatestStatistics({

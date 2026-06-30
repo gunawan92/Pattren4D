@@ -10,7 +10,7 @@ const historicalDraws = [
   { _id: 'c', weekOffset: 3, normalizedResult: '9062' },
 ]
 
-test('generateCandidatePool accepts and rejects only by score range', () => {
+test('generateCandidatePool assigns candidates to historical pattern clusters', () => {
   const pool = generateCandidatePool({
     currentWeightProfile: {
       0: 10,
@@ -25,6 +25,15 @@ test('generateCandidatePool accepts and rejects only by score range', () => {
       9: 10,
     },
     suggestedScoreRange: { min: 160, max: 210 },
+    patternAnalysis: {
+      scoreClusters: [
+        { band: 'low', min: 160, max: 176, count: 1, frequency: 0.33 },
+        { band: 'medium', min: 177, max: 193, count: 1, frequency: 0.33 },
+        { band: 'high', min: 194, max: 210, count: 1, frequency: 0.33 },
+      ],
+      dominantBand: 'low',
+      digitTrends: { trends: [] },
+    },
   })
 
   const accepted = pool.find((item) => item.candidate === '5562')
@@ -32,8 +41,9 @@ test('generateCandidatePool accepts and rejects only by score range', () => {
 
   assert.equal(accepted.status, 'accepted')
   assert.equal(accepted.dsv1Score, 160)
+  assert.equal(accepted.patternBand, 'low')
   assert.equal(rejected.status, 'rejected')
-  assert.match(rejected.rejectionReason, /outside suggested range/)
+  assert.match(rejected.rejectionReason, /outside historical pattern clusters/)
 })
 
 test('validateCandidate returns pluggable evidence and support', () => {

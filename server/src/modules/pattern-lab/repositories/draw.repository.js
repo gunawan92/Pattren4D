@@ -1,12 +1,35 @@
-import { AnalysisCandidate } from '../../analyzer/analyzer.model.js'
 import { DrawResult } from '../../draw/draw.model.js'
 import {
   normalize4d,
-  normalizeWeightProfile,
-  profileFromHistoricalDraws,
   subtractDays,
   toDateText,
 } from '../statistics.js'
+
+function slashDateText(date) {
+  const day = String(date.getUTCDate()).padStart(2, '0')
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const year = date.getUTCFullYear()
+
+  return `${day}/${month}/${year}`
+}
+
+function normalizeDrawDateText(value) {
+  const text = String(value || '').trim()
+
+  const isoLike = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/)
+  if (isoLike) {
+    const [, year, month, day] = isoLike
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+
+  const slashLike = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/)
+  if (slashLike) {
+    const [, day, month, year] = slashLike
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+
+  return ''
+}
 
 export async function findDrawByDate({ market = 'nex4d', session, date }) {
   const start = new Date(date)
@@ -14,6 +37,20 @@ export async function findDrawByDate({ market = 'nex4d', session, date }) {
 
   const end = new Date(start)
   end.setUTCDate(end.getUTCDate() + 1)
+
+  const targetDateText = toDateText(start)
+  const targetSlashDateText = slashDateText(start)
+  const draw = await DrawResult.findOne({
+    market,
+    session,
+    drawDateText: { $in: [targetDateText, targetSlashDateText] },
+  })
+    .sort({ drawDate: -1, createdAt: -1 })
+    .lean()
+
+  if (draw) {
+    return draw
+  }
 
   return DrawResult.findOne({
     market,
@@ -48,90 +85,4 @@ export async function loadHistoricalDraws({
   return draws
 }
 
-export async function findStoredDsv1Profile({
-  market = 'nex4d',
-  session,
-  targetDateText,
-}) {
-  const row = await AnalysisCandidate.findOne({
-    market,
-    session,
-    targetDateText,
-    'digitPool.weighted': { $exists: true },
-  })
-    .sort({ updatedAt: -1, createdAt: -1 })
-    .lean()
-
-  if (!row?.digitPool?.weighted) {
-    return null
-  }
-
-  return {
-    profile: normalizeWeightProfile(row.digitPool.weighted),
-    source: {
-      type: 'analysis_candidates.digitPool.weighted',
-      analysisCandidateId: row._id,
-      algorithmVersion: row.algorithmVersion,
-    },
-  }
-}
-
-export async function resolveDsv1Profile({
-  market = 'nex4d',
-  session,
-  targetDate,
-  explicitProfile,
-  fallbackDraws,
-}) {
-  if (explicitProfile && Object.keys(explicitProfile).length) {
-    return {
-      profile: normalizeWeightProfile(explicitProfile),
-      source: { type: 'request' },
-    }
-  }
-
-  const targetDateText = toDateText(targetDate)
-  const stored = await findStoredDsv1Profile({ market, session, targetDateText })
-
-  if (stored) {
-    return stored
-  }
-
-  return {
-    profile: normalizeWeightProfile(profileFromHistoricalDraws(fallbackDraws)),
-    source: {
-      type: 'historical_draw_frequency_fallback',
-      reason: 'No stored DSV1 profile found for target period',
-    },
-  }
-}
-
-export async function resolveHistoricalDsv1Profiles({
-  market = 'nex4d',
-  session,
-  historicalDraws,
-}) {
-  const profiles = []
-
-  for (const draw of historicalDraws) {
-    const dateText = draw.drawDate ? toDateText(new Date(draw.drawDate)) : draw.drawDateText
-    const stored = await findStoredDsv1Profile({ market, session, targetDateText: dateText })
-
-    profiles.push({
-      drawId: draw._id,
-      drawDateText: dateText,
-      weekOffset: draw.weekOffset,
-      ...(stored || {
-        profile: normalizeWeightProfile(profileFromHistoricalDraws(historicalDraws.filter((item) => {
-          return item.drawDate && draw.drawDate && new Date(item.drawDate) < new Date(draw.drawDate)
-        }))),
-        source: {
-          type: 'historical_draw_frequency_fallback',
-          reason: 'No stored historical DSV1 profile found for this period',
-        },
-      }),
-    })
-  }
-
-  return profiles
-}
+export { normalizeDrawDateText }

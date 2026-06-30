@@ -27,7 +27,7 @@ const currentPayload = ref({
   session: 'day',
   targetDate: '',
   targetDay: '',
-  algorithmVersion: '',
+  historyDepth: 5,
 })
 
 async function loadLatestResults(nextSession = session.value) {
@@ -100,7 +100,7 @@ function handleSessionChange(nextSession) {
     session: nextSession,
     targetDate: '',
     targetDay: '',
-    algorithmVersion: nextSession === 'day' ? 'day_v1' : 'night_v1',
+    historyDepth: 5,
   }
   loadLatestResults(nextSession)
 }
@@ -161,7 +161,7 @@ onMounted(() => {
           <EvaluationPanel
             :session="currentPayload.session"
             :target-date="currentPayload.targetDate"
-            :algorithm-version="currentPayload.algorithmVersion"
+            algorithm-version=""
             :result="evaluation"
             :loading="evaluationLoading"
             :error="evaluationError"
